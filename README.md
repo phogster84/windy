@@ -60,3 +60,6 @@ which likely executes *after* the user's `zoom` event in this example.
 
 ### Featured Plugin: windy-plugin-cma-typhoon
 - **China CMA Real-Time Typhoon Tracker**: [https://github.com/jianghanzhi2006-dotcom/windy-plugin-cma-typhoon](https://github.com/jianghanzhi2006-dotcom/windy-plugin-cma-typhoon)
+  * Direct live HTTP connection to China Meteorological Administration (typhoon.nmc.cn)
+  * 17-level Beaufort wind scale conversion (GB/T 19201-2006)
+  * Red solid line for observed track, golden dashed line for official 120h forecast track.
