@@ -56,3 +56,7 @@ which likely executes *after* the user's `zoom` event in this example.
     -   Fixed wrong examples
 -   0.1.1
     -   Initial version of this repo
+
+
+### Featured Plugin: windy-plugin-cma-typhoon
+- **China CMA Real-Time Typhoon Tracker**: [https://github.com/jianghanzhi2006-dotcom/windy-plugin-cma-typhoon](https://github.com/jianghanzhi2006-dotcom/windy-plugin-cma-typhoon)
