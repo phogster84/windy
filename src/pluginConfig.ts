@@ -1,17 +1,14 @@
 import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
-    name: 'windy-plugin-my-plugin',
-    version: '0.1.0',
-    icon: '🔌',
-    title: 'This is my first plugin',
-    description: 'This is my first plugin.',
-    author: 'John Doe (optional company name)',
-    repository: 'https://github.com/windycom/windy-plugin-template',
-    desktopUI: 'rhpane',
-    mobileUI: 'fullscreen',
-    routerPath: '/my-plugin',
-    private: true,
+  name: 'windy-plugin-rv-itinerary',
+  version: '1.0.0',
+  icon: '🚐',
+  title: 'RV Trip Calendar Weather',
+  description: 'Loads an RV Life ICS calendar link and syncs the map and timeline.',
+  author: 'phogster84',
+  desktopUI: 'rhpane',
+  mobileUI: 'fullscreen',
 };
 
 export default config;
