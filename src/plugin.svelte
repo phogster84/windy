@@ -3,8 +3,7 @@
   import store from '@windy/store';
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
-  import picker from '@windy/picker';
-  import bcast from '@windy/bcast';
+  import broadcast from '@windy/broadcast';
 
   interface Stop {
     summary: string;
@@ -21,37 +20,7 @@
   let itinerary: Stop[] = [];
   let markers: any[] = [];
   let selectedStop: Stop | null = null;
-  let isCollapsed = false;
-
-  // Custom high-visibility SVG pin marker icon
-  const customPinIcon = L && typeof L.divIcon === 'function' ? L.divIcon({
-    className: 'rv-custom-pin-wrapper',
-    html: `
-      <div style="
-        background-color: #e53935;
-        width: 28px;
-        height: 28px;
-        border-radius: 50% 50% 50% 0;
-        transform: rotate(-45deg);
-        border: 2px solid #ffffff;
-        box-shadow: 0 3px 8px rgba(0,0,0,0.6);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-      ">
-        <div style="
-          width: 10px;
-          height: 10px;
-          background-color: #ffffff;
-          border-radius: 50%;
-          transform: rotate(45deg);
-        "></div>
-      </div>
-    `,
-    iconSize: [28, 28],
-    iconAnchor: [14, 28],
-    popupAnchor: [0, -28]
-  }) : null;
+  let isMinimized = false;
 
   onDestroy(() => {
     clearMarkers();
@@ -67,8 +36,14 @@
     if (!map || typeof L === 'undefined') return;
 
     itinerary.forEach((stop) => {
-      const markerOptions = customPinIcon ? { icon: customPinIcon } : {};
-      const marker = L.marker([stop.lat, stop.lon], markerOptions)
+      // CircleMarker uses native SVG vector rendering - guaranteed to show up without broken PNG links
+      const marker = L.circleMarker([stop.lat, stop.lon], {
+        radius: 10,
+        color: '#ffffff',
+        weight: 2,
+        fillColor: '#e53935',
+        fillOpacity: 1.0
+      })
         .addTo(map)
         .bindPopup(`<b>${stop.summary}</b><br/>📅 ${stop.startDate}`);
 
@@ -171,7 +146,6 @@
           errorMessage = 'No stops found within the next 10 days.';
         } else {
           renderMarkers();
-          // Automatically jump to first stop upon loading
           jumpToStop(itinerary[0]);
         }
       } catch (err: any) {
@@ -188,17 +162,17 @@
   function jumpToStop(stop: Stop) {
     selectedStop = stop;
 
-    // 1. Center map on location
+    // 1. Center map
     if (map) {
       map.setView([stop.lat, stop.lon], 10);
     }
 
-    // 2. Open marker popup pin
+    // 2. Open vector marker popup
     if (stop.marker) {
       stop.marker.openPopup();
     }
 
-    // 3. Sync timeline date
+    // 3. Set Windy timeline date
     if (stop.startDate && store) {
       const timestamp = stop.dateObj.getTime();
       if (!isNaN(timestamp)) {
@@ -206,37 +180,31 @@
       }
     }
 
-    // 4. Open Windy's bottom weather detail pane
+    // 4. Fire Windy broadcast event to open bottom forecast detail panel
     try {
-      if (picker && typeof picker.open === 'function') {
-        picker.open({ lat: stop.lat, lon: stop.lon });
-      }
-      if (bcast) {
-        bcast.fire('openDetail', { lat: stop.lat, lon: stop.lon });
+      if (broadcast && typeof broadcast.fire === 'function') {
+        broadcast.fire('openDetail', { lat: stop.lat, lon: stop.lon });
       }
     } catch (e) {
-      console.warn('Unable to trigger weather detail pane:', e);
+      console.warn('Could not open weather detail panel:', e);
     }
   }
 
-  function toggleCollapse() {
-    isCollapsed = !isCollapsed;
+  function toggleMinimize() {
+    isMinimized = !isMinimized;
   }
 </script>
 
-<div class="rv-plugin-wrapper" class:collapsed={isCollapsed}>
-  <!-- Collapsible Slide Toggle Tab -->
-  <button
-    class="collapse-toggle"
-    on:click={toggleCollapse}
-    title={isCollapsed ? "Expand Panel" : "Hide Panel"}
-  >
-    {isCollapsed ? '❮' : '❯'}
-  </button>
-
-  <div class="rv-plugin-container">
+<div class="rv-plugin-container">
+  <!-- Header with integrated Minimize/Expand Toggle -->
+  <div class="header-row">
     <h3>RV Trip Weather</h3>
+    <button class="toggle-btn" on:click={toggleMinimize} title={isMinimized ? "Expand Panel" : "Minimize Panel"}>
+      {isMinimized ? '➕ Expand' : '➖ Minimize'}
+    </button>
+  </div>
 
+  {#if !isMinimized}
     <div class="section">
       <label for="ics-file"><strong>Upload RVLife .ics File:</strong></label>
       <input
@@ -275,69 +243,53 @@
     {:else if !loading && !errorMessage}
       <div class="empty-state">Upload an `.ics` file to view trip weather.</div>
     {/if}
-  </div>
+  {/if}
 </div>
 
 <style>
-  .rv-plugin-wrapper {
-    position: relative;
-    width: 320px;
-    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-sizing: border-box;
-    z-index: 1000;
-  }
-
-  /* Slide panel off screen when collapsed to reveal Windy map layers */
-  .rv-plugin-wrapper.collapsed {
-    transform: translateX(calc(100% - 12px));
-  }
-
-  .collapse-toggle {
-    position: absolute;
-    left: -28px;
-    top: 16px;
-    width: 28px;
-    height: 36px;
-    background: rgba(22, 27, 34, 0.95);
-    color: #2196f3;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-right: none;
-    border-radius: 6px 0 0 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    font-weight: bold;
-    cursor: pointer;
-    box-shadow: -4px 2px 8px rgba(0, 0, 0, 0.4);
-    z-index: 1001;
-  }
-
-  .collapse-toggle:hover {
-    background: #2196f3;
-    color: #fff;
-  }
-
   .rv-plugin-container {
-    padding: 14px;
+    padding: 12px;
     font-size: 13px;
     color: #fff;
+    /* 95% dark opaque background */
     background: rgba(22, 27, 34, 0.95);
-    border-radius: 8px 0 0 8px;
+    border-radius: 8px;
     box-sizing: border-box;
+    width: 100%;
     box-shadow: -4px 0 15px rgba(0, 0, 0, 0.5);
-    height: auto;
+  }
+
+  .header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
   }
 
   h3 {
-    margin-top: 0;
-    margin-bottom: 12px;
+    margin: 0;
     font-size: 15px;
     color: #fff;
   }
 
+  .toggle-btn {
+    background: rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    color: #2196f3;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+
+  .toggle-btn:hover {
+    background: #2196f3;
+    color: #fff;
+  }
+
   h4 {
-    margin: 12px 0 6px 0;
+    margin: 10px 0 6px 0;
     color: #ddd;
     font-size: 12px;
   }
@@ -345,7 +297,7 @@
   .section {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 4px;
   }
 
   input[type='file'] {
@@ -361,25 +313,22 @@
 
   .error {
     color: #ff5252;
-    margin-top: 10px;
+    margin-top: 8px;
     font-weight: bold;
   }
 
   .loading-state,
   .empty-state {
-    margin-top: 12px;
+    margin-top: 10px;
     opacity: 0.7;
     font-style: italic;
   }
 
   .stops-list {
-    margin-top: 10px;
+    margin-top: 8px;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    /* Height fits content dynamically without forcing scrollbars */
-    height: auto;
-    overflow: visible;
   }
 
   .stop-card {
