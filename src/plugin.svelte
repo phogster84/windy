@@ -1,34 +1,22 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onDestroy } from 'svelte';
   import store from '@windy/store';
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
-
-  interface CalendarEvent {
-    summary: string;
-    location: string;
-    startDate: string;
-  }
 
   interface Stop {
     summary: string;
     location: string;
     startDate: string;
+    dateObj: Date;
     lat: number;
     lon: number;
   }
 
-  const STORAGE_KEY = 'rv_ics_url';
-
-  let icsUrl = '';
   let loading = false;
   let errorMessage = '';
   let itinerary: Stop[] = [];
   let markers: any[] = [];
-
-  onMount(() => {
-    icsUrl = localStorage.getItem(STORAGE_KEY) || '';
-  });
 
   onDestroy(() => {
     clearMarkers();
@@ -46,7 +34,7 @@
     itinerary.forEach((stop) => {
       const marker = L.marker([stop.lat, stop.lon])
         .addTo(map)
-        .bindPopup(`<b>${stop.summary}</b><br/>${stop.startDate}`);
+        .bindPopup(`<b>${stop.summary}</b><br/>📅 ${stop.startDate}`);
       markers.push(marker);
     });
 
@@ -56,68 +44,82 @@
     }
   }
 
-  // Parses raw .ics file strings into structured event objects
-  function parseICS(icsText: string): CalendarEvent[] {
-    const events: CalendarEvent[] = [];
-    const eventBlocks = icsText.split('BEGIN:VEVENT');
+  // Clean ICS text formatting (unfolds wrapped lines and unescapes characters)
+  function cleanIcsText(rawText: string): string {
+    return rawText
+      .replace(/\r\n[ \t]/g, '') // Unfold multiline ICS properties
+      .replace(/\\n/g, ' ')       // Replace encoded linebreaks
+      .replace(/\\,/g, ',')       // Unescape commas
+      .replace(/\\;/g, ';');      // Unescape semicolons
+  }
+
+  function parseICS(icsText: string): Stop[] {
+    const cleanedText = cleanIcsText(icsText);
+    const eventBlocks = cleanedText.split('BEGIN:VEVENT');
+    const parsedStops: Stop[] = [];
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Midnight baseline for accurate date comparison
 
     for (let i = 1; i < eventBlocks.length; i++) {
       const block = eventBlocks[i].split('END:VEVENT')[0];
 
+      // Extract SUMMARY, LOCATION, DTSTART, and GEO
       const summaryMatch = block.match(/SUMMARY(?:;[^:]*)?:(.*)/);
       const locationMatch = block.match(/LOCATION(?:;[^:]*)?:(.*)/);
-      const dtstartMatch = block.match(/DTSTART(?:;[^:]*)?:(.*)/);
+      const dtstartMatch = block.match(/DTSTART(?:;[^:]*)?:(\d{8})/);
+      const geoMatch = block.match(/GEO(?:;[^:]*)?:([0-9.-]+);([0-9.-]+)/);
 
-      const summary = summaryMatch ? summaryMatch[1].trim() : '';
+      // We need valid coordinates to plot on map
+      if (!geoMatch) continue;
+
+      const lat = parseFloat(geoMatch[1]);
+      const lon = parseFloat(geoMatch[2]);
+      if (isNaN(lat) || isNaN(lon)) continue;
+
+      const summary = summaryMatch ? summaryMatch[1].trim() : 'RV Stop';
       const location = locationMatch ? locationMatch[1].trim() : '';
-      const rawDate = dtstartMatch ? dtstartMatch[1].trim() : '';
 
-      let startDate = rawDate;
-      if (rawDate.length >= 8) {
-        const y = rawDate.slice(0, 4);
-        const m = rawDate.slice(4, 6);
-        const d = rawDate.slice(6, 8);
-        startDate = `${y}-${m}-${d}`;
+      // Date parsing (YYYYMMDD)
+      let startDateStr = 'No date';
+      let eventDate: Date | null = null;
+
+      if (dtstartMatch && dtstartMatch[1]) {
+        const rawDate = dtstartMatch[1];
+        const year = parseInt(rawDate.slice(0, 4), 10);
+        const month = parseInt(rawDate.slice(4, 6), 10) - 1; // Month is 0-indexed in JS
+        const day = parseInt(rawDate.slice(6, 8), 10);
+
+        eventDate = new Date(year, month, day);
+        startDateStr = eventDate.toISOString().split('T')[0];
       }
 
-      if (summary || location) {
-        events.push({ summary, location, startDate });
-      }
-    }
-    return events;
-  }
+      // 10-Day Date Filtering Logic
+      if (eventDate) {
+        // Calculate difference in days from today
+        const diffInTime = eventDate.getTime() - today.getTime();
+        const diffInDays = diffInTime / (1000 * 3600 * 24);
 
-  // Geocodes array of events using OpenStreetMap
-  async function processEvents(rawEvents: CalendarEvent[]) {
-    const parsedStops: Stop[] = [];
-
-    for (let ev of rawEvents) {
-      const searchTarget = ev.location || ev.summary;
-      if (!searchTarget) continue;
-
-      try {
-        const geoRes = await fetch(
-          `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchTarget)}`
-        );
-        const geoData = await geoRes.json();
-
-        if (geoData && geoData.length > 0) {
-          parsedStops.push({
-            summary: ev.summary || searchTarget,
-            location: ev.location,
-            startDate: ev.startDate,
-            lat: parseFloat(geoData[0].lat),
-            lon: parseFloat(geoData[0].lon)
-          });
+        // Filter: Keep stops occurring within the next 10 days (or currently active within 10 days)
+        if (diffInDays < 0 || diffInDays > 10) {
+          continue;
         }
-      } catch (err) {
-        console.warn('Geocoding failed for:', searchTarget, err);
       }
+
+      parsedStops.push({
+        summary,
+        location,
+        startDate: startDateStr,
+        dateObj: eventDate || new Date(),
+        lat,
+        lon
+      });
     }
-    return parsedStops;
+
+    // Sort stops chronologically
+    return parsedStops.sort((a, b) => a.dateObj.getTime() - b.dateObj.getTime());
   }
 
-  // Handle local file upload (FileReader)
   function handleFileUpload(event: Event) {
     const target = event.target as HTMLInputElement;
     const file = target.files?.[0];
@@ -127,62 +129,37 @@
     errorMessage = '';
 
     const reader = new FileReader();
-    reader.onload = async (e) => {
+    reader.onload = (e) => {
       try {
         const text = e.target?.result as string;
         if (!text || !text.includes('BEGIN:VCALENDAR')) {
-          throw new Error('Invalid ICS file contents.');
+          throw new Error('Invalid ICS file. Ensure this is an RVLife export.');
         }
 
-        const rawEvents = parseICS(text);
-        itinerary = await processEvents(rawEvents);
-        renderMarkers();
+        itinerary = parseICS(text);
+
+        if (itinerary.length === 0) {
+          errorMessage = 'No stops with valid coordinates found within 10 days of today.';
+        } else {
+          renderMarkers();
+        }
       } catch (err: any) {
         console.error(err);
-        errorMessage = err.message || 'Error processing uploaded file.';
+        errorMessage = err.message || 'Error parsing uploaded file.';
       } finally {
         loading = false;
       }
     };
+
     reader.readAsText(file);
   }
 
-  // Handle fetching via URL through a proxy
-  async function loadICS() {
-    if (!icsUrl) return;
-    loading = true;
-    errorMessage = '';
-    localStorage.setItem(STORAGE_KEY, icsUrl);
-
-    try {
-      const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(icsUrl)}`;
-      const res = await fetch(proxyUrl);
-
-      if (!res.ok) throw new Error(`Fetch failed with status ${res.status}`);
-
-      const text = await res.text();
-      if (!text.includes('BEGIN:VCALENDAR')) {
-        throw new Error('Calendar link returned invalid data or was blocked.');
-      }
-
-      const rawEvents = parseICS(text);
-      itinerary = await processEvents(rawEvents);
-      renderMarkers();
-    } catch (e: any) {
-      console.error(e);
-      errorMessage = e.message || 'Failed to fetch online ICS file.';
-    } finally {
-      loading = false;
-    }
-  }
-
-  // Pan map and update Windy timeline when clicking a stop card
   function jumpToStop(stop: Stop) {
     if (map) {
       map.setView([stop.lat, stop.lon], 10);
     }
     if (stop.startDate && store) {
-      const timestamp = new Date(stop.startDate).getTime();
+      const timestamp = stop.dateObj.getTime();
       if (!isNaN(timestamp)) {
         store.set('timestamp', timestamp);
       }
@@ -191,11 +168,10 @@
 </script>
 
 <div class="rv-plugin-container">
-  <h3>RV Trip Itinerary Weather</h3>
+  <h3>RV Trip Weather (Next 10 Days)</h3>
 
-  <!-- Local File Upload Section -->
   <div class="section">
-    <label for="ics-file"><strong>Upload .ics Calendar File:</strong></label>
+    <label for="ics-file"><strong>Upload RVLife .ics File:</strong></label>
     <input
       id="ics-file"
       type="file"
@@ -205,46 +181,28 @@
     />
   </div>
 
-  <div class="divider">OR</div>
-
-  <!-- URL Fetch Section -->
-  <div class="section">
-    <label for="ics-url"><strong>RV Life ICS URL:</strong></label>
-    <input
-      id="ics-url"
-      type="text"
-      bind:value={icsUrl}
-      placeholder="https://..."
-      disabled={loading}
-    />
-    <button on:click={loadICS} disabled={loading || !icsUrl}>
-      {loading ? 'Processing...' : 'Load from Web'}
-    </button>
-  </div>
-
   {#if errorMessage}
     <div class="error">{errorMessage}</div>
   {/if}
 
   {#if loading}
-    <div class="loading-state">Parsing calendar and geocoding stops...</div>
+    <div class="loading-state">Parsing itinerary...</div>
   {/if}
 
-  <!-- Itinerary List Output -->
   {#if itinerary.length > 0}
     <div class="stops-list">
-      <h4>Trip Stops ({itinerary.length})</h4>
+      <h4>Upcoming Stops ({itinerary.length})</h4>
       {#each itinerary as stop}
         <button class="stop-card" on:click={() => jumpToStop(stop)}>
           <div class="stop-title">{stop.summary}</div>
           <div class="stop-details">
-            📅 {stop.startDate || 'No date'} | 📍 {stop.lat.toFixed(3)}, {stop.lon.toFixed(3)}
+            📅 {stop.startDate} | 📍 {stop.lat.toFixed(3)}, {stop.lon.toFixed(3)}
           </div>
         </button>
       {/each}
     </div>
-  {:else if !loading}
-    <div class="empty-state">Upload an .ics file to display your trip on Windy.</div>
+  {:else if !loading && !errorMessage}
+    <div class="empty-state">Upload your `.ics` file to view upcoming trip weather.</div>
   {/if}
 </div>
 
@@ -258,7 +216,7 @@
   h3 {
     margin-top: 0;
     margin-bottom: 12px;
-    font-size: 16px;
+    font-size: 15px;
   }
 
   h4 {
@@ -271,7 +229,6 @@
     gap: 6px;
   }
 
-  input[type='text'],
   input[type='file'] {
     width: 100%;
     padding: 6px;
@@ -282,32 +239,9 @@
     box-sizing: border-box;
   }
 
-  button {
-    padding: 8px;
-    border-radius: 4px;
-    border: none;
-    background: #2196f3;
-    color: white;
-    font-weight: bold;
-    cursor: pointer;
-  }
-
-  button:disabled {
-    background: #555;
-    cursor: not-allowed;
-  }
-
-  .divider {
-    text-align: center;
-    margin: 10px 0;
-    font-weight: bold;
-    opacity: 0.6;
-    font-size: 11px;
-  }
-
   .error {
     color: #ff5252;
-    margin-top: 8px;
+    margin-top: 10px;
     font-weight: bold;
   }
 
@@ -323,7 +257,7 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 400px;
+    max-height: 420px;
     overflow-y: auto;
   }
 
@@ -336,6 +270,7 @@
     padding: 8px;
     border-radius: 4px;
     text-align: left;
+    cursor: pointer;
     transition: background 0.2s;
   }
 
@@ -346,12 +281,13 @@
   .stop-title {
     font-weight: bold;
     font-size: 13px;
+    color: #fff;
   }
 
   .stop-details {
     font-size: 11px;
     opacity: 0.8;
     margin-top: 2px;
+    color: #ddd;
   }
 </style>
-
