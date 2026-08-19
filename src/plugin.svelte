@@ -4,6 +4,7 @@
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
   import picker from '@windy/picker';
+  import bcast from '@windy/bcast';
 
   interface Stop {
     summary: string;
@@ -20,6 +21,37 @@
   let itinerary: Stop[] = [];
   let markers: any[] = [];
   let selectedStop: Stop | null = null;
+  let isCollapsed = false;
+
+  // Custom high-visibility SVG pin marker icon
+  const customPinIcon = L && typeof L.divIcon === 'function' ? L.divIcon({
+    className: 'rv-custom-pin-wrapper',
+    html: `
+      <div style="
+        background-color: #e53935;
+        width: 28px;
+        height: 28px;
+        border-radius: 50% 50% 50% 0;
+        transform: rotate(-45deg);
+        border: 2px solid #ffffff;
+        box-shadow: 0 3px 8px rgba(0,0,0,0.6);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      ">
+        <div style="
+          width: 10px;
+          height: 10px;
+          background-color: #ffffff;
+          border-radius: 50%;
+          transform: rotate(45deg);
+        "></div>
+      </div>
+    `,
+    iconSize: [28, 28],
+    iconAnchor: [14, 28],
+    popupAnchor: [0, -28]
+  }) : null;
 
   onDestroy(() => {
     clearMarkers();
@@ -35,8 +67,8 @@
     if (!map || typeof L === 'undefined') return;
 
     itinerary.forEach((stop) => {
-      // Create interactive Leaflet marker pin
-      const marker = L.marker([stop.lat, stop.lon])
+      const markerOptions = customPinIcon ? { icon: customPinIcon } : {};
+      const marker = L.marker([stop.lat, stop.lon], markerOptions)
         .addTo(map)
         .bindPopup(`<b>${stop.summary}</b><br/>📅 ${stop.startDate}`);
 
@@ -50,7 +82,6 @@
     }
   }
 
-  // Clean ICS line unwrapping and character unescaping
   function cleanIcsText(rawText: string): string {
     return rawText
       .replace(/\r\n[ \t]/g, '')
@@ -97,7 +128,6 @@
         startDateStr = eventDate.toISOString().split('T')[0];
       }
 
-      // Filter for stops within 10 days
       if (eventDate) {
         const diffInDays = (eventDate.getTime() - today.getTime()) / (1000 * 3600 * 24);
         if (diffInDays < 0 || diffInDays > 10) {
@@ -138,9 +168,11 @@
         itinerary = parseICS(text);
 
         if (itinerary.length === 0) {
-          errorMessage = 'No stops with valid coordinates found within the next 10 days.';
+          errorMessage = 'No stops found within the next 10 days.';
         } else {
           renderMarkers();
+          // Automatically jump to first stop upon loading
+          jumpToStop(itinerary[0]);
         }
       } catch (err: any) {
         console.error(err);
@@ -156,17 +188,17 @@
   function jumpToStop(stop: Stop) {
     selectedStop = stop;
 
-    // 1. Pan map to stop position
+    // 1. Center map on location
     if (map) {
       map.setView([stop.lat, stop.lon], 10);
     }
 
-    // 2. Open map pin popup to direct attention
+    // 2. Open marker popup pin
     if (stop.marker) {
       stop.marker.openPopup();
     }
 
-    // 3. Set Windy timeline date
+    // 3. Sync timeline date
     if (stop.startDate && store) {
       const timestamp = stop.dateObj.getTime();
       if (!isNaN(timestamp)) {
@@ -174,83 +206,140 @@
       }
     }
 
-    // 4. Open Windy's bottom detail forecast panel
+    // 4. Open Windy's bottom weather detail pane
     try {
       if (picker && typeof picker.open === 'function') {
         picker.open({ lat: stop.lat, lon: stop.lon });
       }
+      if (bcast) {
+        bcast.fire('openDetail', { lat: stop.lat, lon: stop.lon });
+      }
     } catch (e) {
-      console.warn('Unable to open forecast picker:', e);
+      console.warn('Unable to trigger weather detail pane:', e);
     }
+  }
+
+  function toggleCollapse() {
+    isCollapsed = !isCollapsed;
   }
 </script>
 
-<div class="rv-plugin-container">
-  <h3>RV Trip Weather (Next 10 Days)</h3>
+<div class="rv-plugin-wrapper" class:collapsed={isCollapsed}>
+  <!-- Collapsible Slide Toggle Tab -->
+  <button
+    class="collapse-toggle"
+    on:click={toggleCollapse}
+    title={isCollapsed ? "Expand Panel" : "Hide Panel"}
+  >
+    {isCollapsed ? '❮' : '❯'}
+  </button>
 
-  <div class="section">
-    <label for="ics-file"><strong>Upload RVLife .ics File:</strong></label>
-    <input
-      id="ics-file"
-      type="file"
-      accept=".ics"
-      on:change={handleFileUpload}
-      disabled={loading}
-    />
-  </div>
+  <div class="rv-plugin-container">
+    <h3>RV Trip Weather</h3>
 
-  {#if errorMessage}
-    <div class="error">{errorMessage}</div>
-  {/if}
-
-  {#if loading}
-    <div class="loading-state">Parsing itinerary...</div>
-  {/if}
-
-  {#if itinerary.length > 0}
-    <div class="stops-list">
-      <h4>Upcoming Stops ({itinerary.length})</h4>
-      {#each itinerary as stop}
-        <button
-          class="stop-card"
-          class:active={selectedStop === stop}
-          on:click={() => jumpToStop(stop)}
-        >
-          <div class="stop-title">{stop.summary}</div>
-          <div class="stop-details">
-            📅 {stop.startDate} | 📍 {stop.lat.toFixed(3)}, {stop.lon.toFixed(3)}
-          </div>
-        </button>
-      {/each}
+    <div class="section">
+      <label for="ics-file"><strong>Upload RVLife .ics File:</strong></label>
+      <input
+        id="ics-file"
+        type="file"
+        accept=".ics"
+        on:change={handleFileUpload}
+        disabled={loading}
+      />
     </div>
-  {:else if !loading && !errorMessage}
-    <div class="empty-state">Upload your `.ics` file to view upcoming trip weather.</div>
-  {/if}
+
+    {#if errorMessage}
+      <div class="error">{errorMessage}</div>
+    {/if}
+
+    {#if loading}
+      <div class="loading-state">Parsing itinerary...</div>
+    {/if}
+
+    {#if itinerary.length > 0}
+      <div class="stops-list">
+        <h4>Upcoming Stops ({itinerary.length})</h4>
+        {#each itinerary as stop}
+          <button
+            class="stop-card"
+            class:active={selectedStop === stop}
+            on:click={() => jumpToStop(stop)}
+          >
+            <div class="stop-title">{stop.summary}</div>
+            <div class="stop-details">
+              📅 {stop.startDate} | 📍 {stop.lat.toFixed(3)}, {stop.lon.toFixed(3)}
+            </div>
+          </button>
+        {/each}
+      </div>
+    {:else if !loading && !errorMessage}
+      <div class="empty-state">Upload an `.ics` file to view trip weather.</div>
+    {/if}
+  </div>
 </div>
 
 <style>
+  .rv-plugin-wrapper {
+    position: relative;
+    width: 320px;
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-sizing: border-box;
+    z-index: 1000;
+  }
+
+  /* Slide panel off screen when collapsed to reveal Windy map layers */
+  .rv-plugin-wrapper.collapsed {
+    transform: translateX(calc(100% - 12px));
+  }
+
+  .collapse-toggle {
+    position: absolute;
+    left: -28px;
+    top: 16px;
+    width: 28px;
+    height: 36px;
+    background: rgba(22, 27, 34, 0.95);
+    color: #2196f3;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-right: none;
+    border-radius: 6px 0 0 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: -4px 2px 8px rgba(0, 0, 0, 0.4);
+    z-index: 1001;
+  }
+
+  .collapse-toggle:hover {
+    background: #2196f3;
+    color: #fff;
+  }
+
   .rv-plugin-container {
     padding: 14px;
     font-size: 13px;
     color: #fff;
-    /* High opacity dark background to make text easily readable over map elements */
     background: rgba(22, 27, 34, 0.95);
-    border-radius: 8px;
+    border-radius: 8px 0 0 8px;
     box-sizing: border-box;
-    height: 100%;
-    box-shadow: -4px 0 15px rgba(0, 0, 0, 0.4);
+    box-shadow: -4px 0 15px rgba(0, 0, 0, 0.5);
+    height: auto;
   }
 
   h3 {
     margin-top: 0;
     margin-bottom: 12px;
-    font-size: 16px;
+    font-size: 15px;
     color: #fff;
   }
 
   h4 {
     margin: 12px 0 6px 0;
     color: #ddd;
+    font-size: 12px;
   }
 
   .section {
@@ -267,6 +356,7 @@
     background: #111;
     color: #fff;
     box-sizing: border-box;
+    font-size: 11px;
   }
 
   .error {
@@ -283,12 +373,13 @@
   }
 
   .stops-list {
-    margin-top: 12px;
+    margin-top: 10px;
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 480px;
-    overflow-y: auto;
+    /* Height fits content dynamically without forcing scrollbars */
+    height: auto;
+    overflow: visible;
   }
 
   .stop-card {
@@ -297,7 +388,7 @@
     align-items: flex-start;
     background: rgba(255, 255, 255, 0.08);
     border: 1px solid rgba(255, 255, 255, 0.15);
-    padding: 10px;
+    padding: 8px 10px;
     border-radius: 6px;
     text-align: left;
     cursor: pointer;
@@ -310,19 +401,19 @@
   }
 
   .stop-card.active {
-    background: rgba(33, 150, 243, 0.25);
+    background: rgba(33, 150, 243, 0.3);
     border: 1px solid #2196f3;
   }
 
   .stop-title {
     font-weight: bold;
-    font-size: 13px;
+    font-size: 12px;
     color: #ffffff;
   }
 
   .stop-details {
-    font-size: 11px;
+    font-size: 10px;
     color: #ccc;
-    margin-top: 4px;
+    margin-top: 3px;
   }
 </style>
