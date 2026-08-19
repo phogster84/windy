@@ -3,6 +3,7 @@
   import store from '@windy/store';
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
+  import picker from '@windy/picker';
   import broadcast from '@windy/broadcast';
 
   interface Stop {
@@ -31,27 +32,39 @@
     markers = [];
   }
 
+  // Create SVG marker pin directly with Leaflet
+  function createPinIcon(isActive: boolean) {
+    if (!L || typeof L.divIcon !== 'function') return null;
+    return L.divIcon({
+      className: isActive ? 'rv-marker-pin active' : 'rv-marker-pin',
+      iconSize: [26, 26],
+      iconAnchor: [13, 26],
+      popupAnchor: [0, -26]
+    });
+  }
+
   function renderMarkers() {
     clearMarkers();
     if (!map || typeof L === 'undefined') return;
 
     itinerary.forEach((stop) => {
-      // CircleMarker uses native SVG vector rendering - guaranteed to show up without broken PNG links
-      const marker = L.circleMarker([stop.lat, stop.lon], {
-        radius: 10,
-        color: '#ffffff',
-        weight: 2,
-        fillColor: '#e53935',
-        fillOpacity: 1.0
-      })
+      const isActive = selectedStop === stop;
+      const icon = createPinIcon(isActive);
+      const markerOptions = icon ? { icon } : {};
+
+      const marker = L.marker([stop.lat, stop.lon], markerOptions)
         .addTo(map)
         .bindPopup(`<b>${stop.summary}</b><br/>📅 ${stop.startDate}`);
 
       stop.marker = marker;
       markers.push(marker);
+
+      if (isActive) {
+        marker.openPopup();
+      }
     });
 
-    if (markers.length > 0) {
+    if (markers.length > 0 && !selectedStop) {
       const group = L.featureGroup(markers);
       map.fitBounds(group.getBounds().pad(0.2));
     }
@@ -103,6 +116,7 @@
         startDateStr = eventDate.toISOString().split('T')[0];
       }
 
+      // Filter for stops within 10 days
       if (eventDate) {
         const diffInDays = (eventDate.getTime() - today.getTime()) / (1000 * 3600 * 24);
         if (diffInDays < 0 || diffInDays > 10) {
@@ -167,12 +181,10 @@
       map.setView([stop.lat, stop.lon], 10);
     }
 
-    // 2. Open vector marker popup
-    if (stop.marker) {
-      stop.marker.openPopup();
-    }
+    // 2. Refresh pins so active stop gets highlighted
+    renderMarkers();
 
-    // 3. Set Windy timeline date
+    // 3. Sync timeline date
     if (stop.startDate && store) {
       const timestamp = stop.dateObj.getTime();
       if (!isNaN(timestamp)) {
@@ -180,8 +192,14 @@
       }
     }
 
-    // 4. Fire Windy broadcast event to open bottom forecast detail panel
+    // 4. Force open Windy's bottom forecast weather panel
     try {
+      if (store) {
+        store.set('pickerLocation', { lat: stop.lat, lon: stop.lon });
+      }
+      if (picker && typeof picker.open === 'function') {
+        picker.open({ lat: stop.lat, lon: stop.lon });
+      }
       if (broadcast && typeof broadcast.fire === 'function') {
         broadcast.fire('openDetail', { lat: stop.lat, lon: stop.lon });
       }
@@ -195,12 +213,12 @@
   }
 </script>
 
-<div class="rv-plugin-container">
+<div class="rv-plugin-container" class:minimized={isMinimized}>
   <!-- Header with integrated Minimize/Expand Toggle -->
   <div class="header-row">
     <h3>RV Trip Weather</h3>
-    <button class="toggle-btn" on:click={toggleMinimize} title={isMinimized ? "Expand Panel" : "Minimize Panel"}>
-      {isMinimized ? '➕ Expand' : '➖ Minimize'}
+    <button class="toggle-btn" on:click={toggleMinimize}>
+      {isMinimized ? '➕ Show Panel' : '➖ Hide Panel'}
     </button>
   </div>
 
@@ -226,7 +244,7 @@
 
     {#if itinerary.length > 0}
       <div class="stops-list">
-        <h4>Upcoming Stops ({itinerary.length})</h4>
+        <div class="stops-header">Upcoming Stops ({itinerary.length})</div>
         {#each itinerary as stop}
           <button
             class="stop-card"
@@ -247,36 +265,70 @@
 </div>
 
 <style>
+  /* 1. FORCE OPACITY ON WINDY'S PARENT CONTAINER */
+  :global(#plugin-rhpane),
+  :global(.plugin-content) {
+    background-color: #12161f !important;
+    background: #12161f !important;
+    opacity: 1 !important;
+  }
+
+  /* 2. GLOBAL LEAFLET PIN STYLES (prevents Svelte from stripping dynamic classes) */
+  :global(.rv-marker-pin) {
+    width: 24px !important;
+    height: 24px !important;
+    border-radius: 50% 50% 50% 0 !important;
+    background: #e53935 !important;
+    position: absolute !important;
+    transform: rotate(-45deg) !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7) !important;
+    border: 2px solid #ffffff !important;
+  }
+
+  :global(.rv-marker-pin::after) {
+    content: '' !important;
+    width: 8px !important;
+    height: 8px !important;
+    margin: 6px 0 0 6px !important;
+    background: #ffffff !important;
+    position: absolute !important;
+    border-radius: 50% !important;
+  }
+
+  :global(.rv-marker-pin.active) {
+    background: #00e676 !important; /* Bright green highlight for selected stop */
+    transform: rotate(-45deg) scale(1.25) !important;
+    z-index: 1000 !important;
+  }
+
+  /* 3. PLUGIN UI STYLES */
   .rv-plugin-container {
     padding: 12px;
     font-size: 13px;
     color: #fff;
-    /* 95% dark opaque background */
-    background: rgba(22, 27, 34, 0.95);
-    border-radius: 8px;
+    background: #12161f;
     box-sizing: border-box;
     width: 100%;
-    box-shadow: -4px 0 15px rgba(0, 0, 0, 0.5);
   }
 
   .header-row {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 8px;
   }
 
   h3 {
     margin: 0;
-    font-size: 15px;
+    font-size: 14px;
     color: #fff;
+    font-weight: bold;
   }
 
   .toggle-btn {
     background: rgba(255, 255, 255, 0.15);
     border: 1px solid rgba(255, 255, 255, 0.3);
     color: #2196f3;
-    padding: 3px 8px;
+    padding: 4px 8px;
     border-radius: 4px;
     font-size: 11px;
     font-weight: bold;
@@ -288,13 +340,8 @@
     color: #fff;
   }
 
-  h4 {
-    margin: 10px 0 6px 0;
-    color: #ddd;
-    font-size: 12px;
-  }
-
   .section {
+    margin-top: 10px;
     display: flex;
     flex-direction: column;
     gap: 4px;
@@ -305,7 +352,7 @@
     padding: 6px;
     border-radius: 4px;
     border: 1px solid #444;
-    background: #111;
+    background: #000;
     color: #fff;
     box-sizing: border-box;
     font-size: 11px;
@@ -325,10 +372,17 @@
   }
 
   .stops-list {
-    margin-top: 8px;
+    margin-top: 10px;
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+
+  .stops-header {
+    font-weight: bold;
+    color: #ccc;
+    font-size: 12px;
+    margin-bottom: 2px;
   }
 
   .stop-card {
@@ -350,7 +404,7 @@
   }
 
   .stop-card.active {
-    background: rgba(33, 150, 243, 0.3);
+    background: rgba(33, 150, 243, 0.35);
     border: 1px solid #2196f3;
   }
 
