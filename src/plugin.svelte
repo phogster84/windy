@@ -55,7 +55,12 @@
     localStorage.setItem(STORAGE_KEY, icsUrl);
 
     try {
-      const res = await fetch(icsUrl);
+      // Route through corsproxy.io to bypass browser CORS rules
+      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(icsUrl)}`;
+      const res = await fetch(proxyUrl);
+
+      if (!res.ok) throw new Error('Network error loading calendar.');
+
       const text = await res.text();
       const rawEvents = parseICS(text);
 
@@ -64,6 +69,7 @@
         const searchTarget = ev.location || ev.summary;
         if (!searchTarget) continue;
 
+        // Geocode location using OpenStreetMap
         const geoRes = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchTarget)}`);
         const geoData = await geoRes.json();
 
@@ -79,7 +85,8 @@
       }
       itinerary = parsedStops;
     } catch (e) {
-      errorMessage = 'Failed to load ICS file.';
+      console.error(e);
+      errorMessage = 'Failed to load ICS file. Check link or proxy availability.';
     } finally {
       loading = false;
     }
