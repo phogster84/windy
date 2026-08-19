@@ -56,7 +56,7 @@
 
     try {
       // Route through corsproxy.io to bypass browser CORS rules
-      const proxyUrl = `https://corsproxy.io/?${encodeURIComponent(icsUrl)}`;
+     const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(icsUrl)}`;
       const res = await fetch(proxyUrl);
 
       if (!res.ok) throw new Error('Network error loading calendar.');
