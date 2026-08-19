@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import store from '@windy/store';
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
@@ -16,12 +16,30 @@
     marker?: any;
   }
 
+  const STORAGE_KEY = 'rv_trip_ics_data';
+
   let loading = false;
   let errorMessage = '';
   let itinerary: Stop[] = [];
   let markers: any[] = [];
   let selectedStop: Stop | null = null;
   let isMinimized = false;
+
+  onMount(() => {
+    // Automatically load saved itinerary from previous sessions
+    const savedIcs = localStorage.getItem(STORAGE_KEY);
+    if (savedIcs) {
+      try {
+        itinerary = parseICS(savedIcs);
+        if (itinerary.length > 0) {
+          renderMarkers();
+          jumpToStop(itinerary[0]);
+        }
+      } catch (e) {
+        console.warn('Failed to load cached ICS data:', e);
+      }
+    }
+  });
 
   onDestroy(() => {
     clearMarkers();
@@ -32,14 +50,13 @@
     markers = [];
   }
 
-  // Create SVG marker pin directly with Leaflet
   function createPinIcon(isActive: boolean) {
     if (!L || typeof L.divIcon !== 'function') return null;
     return L.divIcon({
       className: isActive ? 'rv-marker-pin active' : 'rv-marker-pin',
-      iconSize: [26, 26],
-      iconAnchor: [13, 26],
-      popupAnchor: [0, -26]
+      iconSize: [24, 24],
+      iconAnchor: [12, 24],
+      popupAnchor: [0, -24]
     });
   }
 
@@ -116,7 +133,7 @@
         startDateStr = eventDate.toISOString().split('T')[0];
       }
 
-      // Filter for stops within 10 days
+      // Filter for stops within 10 days of today
       if (eventDate) {
         const diffInDays = (eventDate.getTime() - today.getTime()) / (1000 * 3600 * 24);
         if (diffInDays < 0 || diffInDays > 10) {
@@ -154,6 +171,9 @@
           throw new Error('Invalid ICS file format.');
         }
 
+        // Save raw file data to localStorage
+        localStorage.setItem(STORAGE_KEY, text);
+
         itinerary = parseICS(text);
 
         if (itinerary.length === 0) {
@@ -173,18 +193,25 @@
     reader.readAsText(file);
   }
 
+  function clearStoredData() {
+    localStorage.removeItem(STORAGE_KEY);
+    itinerary = [];
+    selectedStop = null;
+    clearMarkers();
+  }
+
   function jumpToStop(stop: Stop) {
     selectedStop = stop;
 
-    // 1. Center map
+    // 1. Center map on stop
     if (map) {
       map.setView([stop.lat, stop.lon], 10);
     }
 
-    // 2. Refresh pins so active stop gets highlighted
+    // 2. Refresh pin icons to highlight active stop
     renderMarkers();
 
-    // 3. Sync timeline date
+    // 3. Sync Windy timeline date
     if (stop.startDate && store) {
       const timestamp = stop.dateObj.getTime();
       if (!isNaN(timestamp)) {
@@ -213,26 +240,37 @@
   }
 </script>
 
-<div class="rv-plugin-container" class:minimized={isMinimized}>
-  <!-- Header with integrated Minimize/Expand Toggle -->
-  <div class="header-row">
-    <h3>RV Trip Weather</h3>
-    <button class="toggle-btn" on:click={toggleMinimize}>
-      {isMinimized ? '➕ Show Panel' : '➖ Hide Panel'}
-    </button>
-  </div>
-
-  {#if !isMinimized}
-    <div class="section">
-      <label for="ics-file"><strong>Upload RVLife .ics File:</strong></label>
-      <input
-        id="ics-file"
-        type="file"
-        accept=".ics"
-        on:change={handleFileUpload}
-        disabled={loading}
-      />
+{#if isMinimized}
+  <!-- Floating un-hide pill button anchored to viewport -->
+  <button class="expand-pill" on:click={toggleMinimize}>
+    🚐 Show RV Weather
+  </button>
+{:else}
+  <div class="rv-plugin-container">
+    <div class="header-row">
+      <h3>RV Trip Weather</h3>
+      <button class="toggle-btn" on:click={toggleMinimize} title="Minimize panel">
+        Hide ✖
+      </button>
     </div>
+
+    {#if itinerary.length === 0}
+      <div class="section">
+        <label for="ics-file"><strong>Upload RVLife .ics File:</strong></label>
+        <input
+          id="ics-file"
+          type="file"
+          accept=".ics"
+          on:change={handleFileUpload}
+          disabled={loading}
+        />
+      </div>
+    {:else}
+      <div class="saved-bar">
+        <span>Loaded trip saved</span>
+        <button class="clear-btn" on:click={clearStoredData}>Replace File</button>
+      </div>
+    {/if}
 
     {#if errorMessage}
       <div class="error">{errorMessage}</div>
@@ -261,11 +299,11 @@
     {:else if !loading && !errorMessage}
       <div class="empty-state">Upload an `.ics` file to view trip weather.</div>
     {/if}
-  {/if}
-</div>
+  </div>
+{/if}
 
 <style>
-  /* 1. FORCE OPACITY ON WINDY'S PARENT CONTAINER */
+  /* 1. OVERRIDE WINDY CONTAINER BACKGROUND */
   :global(#plugin-rhpane),
   :global(.plugin-content) {
     background-color: #12161f !important;
@@ -273,7 +311,7 @@
     opacity: 1 !important;
   }
 
-  /* 2. GLOBAL LEAFLET PIN STYLES (prevents Svelte from stripping dynamic classes) */
+  /* 2. DYNAMIC LEAFLET MARKER STYLES */
   :global(.rv-marker-pin) {
     width: 24px !important;
     height: 24px !important;
@@ -296,12 +334,36 @@
   }
 
   :global(.rv-marker-pin.active) {
-    background: #00e676 !important; /* Bright green highlight for selected stop */
+    background: #00e676 !important;
     transform: rotate(-45deg) scale(1.25) !important;
     z-index: 1000 !important;
   }
 
-  /* 3. PLUGIN UI STYLES */
+  /* 3. FIXED UN-HIDE PILL BUTTON (SURVIVES SIDEBAR COLLAPSE) */
+  .expand-pill {
+    position: fixed !important;
+    top: 16px !important;
+    right: 16px !important;
+    z-index: 999999 !important;
+    background: #2196f3;
+    color: #ffffff;
+    border: 2px solid #ffffff;
+    padding: 8px 14px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+    transition: transform 0.2s, background-color 0.2s;
+    pointer-events: auto !important;
+  }
+
+  .expand-pill:hover {
+    transform: scale(1.08);
+    background: #1e88e5;
+  }
+
+  /* 4. MAIN PLUGIN UI STYLES */
   .rv-plugin-container {
     padding: 12px;
     font-size: 13px;
@@ -325,10 +387,10 @@
   }
 
   .toggle-btn {
-    background: rgba(255, 255, 255, 0.15);
-    border: 1px solid rgba(255, 255, 255, 0.3);
-    color: #2196f3;
-    padding: 4px 8px;
+    background: rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    color: #ff5252;
+    padding: 3px 8px;
     border-radius: 4px;
     font-size: 11px;
     font-weight: bold;
@@ -336,6 +398,33 @@
   }
 
   .toggle-btn:hover {
+    background: #ff5252;
+    color: #fff;
+  }
+
+  .saved-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(33, 150, 243, 0.2);
+    border: 1px solid rgba(33, 150, 243, 0.4);
+    padding: 6px 10px;
+    border-radius: 4px;
+    margin-top: 8px;
+    font-size: 11px;
+  }
+
+  .clear-btn {
+    background: transparent;
+    border: 1px solid #2196f3;
+    color: #64b5f6;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .clear-btn:hover {
     background: #2196f3;
     color: #fff;
   }
