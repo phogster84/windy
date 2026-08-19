@@ -2,7 +2,7 @@ import type { ExternalPluginConfig } from '@windy/interfaces';
 
 const config: ExternalPluginConfig = {
   name: 'windy-plugin-rv-itinerary',
-  version: '1.0.2',
+  version: '1.1.0',
   icon: '🚐',
   title: 'RV Trip Calendar Weather',
   description: 'Loads an RV Life ICS calendar link and syncs the map and timeline.',
