@@ -4,6 +4,7 @@
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
   import picker from '@windy/picker';
+  import broadcast from '@windy/broadcast';
 
   interface Stop {
     summary: string;
@@ -23,27 +24,22 @@
   let markers: any[] = [];
   let selectedStop: Stop | null = null;
   let isMinimized = false;
-
-  // Action to attach floating button directly to the document root (bypasses Windy CSS clipping)
-  function teleport(node: HTMLElement) {
-    document.body.appendChild(node);
-    return {
-      destroy() {
-        if (node.parentNode) {
-          node.parentNode.removeChild(node);
-        }
-      }
-    };
-  }
+  let floatingBtnEl: HTMLElement | null = null;
 
   onMount(() => {
+    // 1. Create a permanent floating toggle button attached directly to document.body
+    createGlobalFloatingButton();
+
+    // 2. Load saved itinerary from previous sessions
     const savedIcs = localStorage.getItem(STORAGE_KEY);
     if (savedIcs) {
       try {
         itinerary = parseICS(savedIcs);
         if (itinerary.length > 0) {
-          renderMarkers();
-          jumpToStop(itinerary[0]);
+          setTimeout(() => {
+            renderMarkers();
+            jumpToStop(itinerary[0]);
+          }, 300);
         }
       } catch (e) {
         console.warn('Failed to load cached ICS data:', e);
@@ -53,33 +49,56 @@
 
   onDestroy(() => {
     clearMarkers();
+    if (floatingBtnEl && floatingBtnEl.parentNode) {
+      floatingBtnEl.parentNode.removeChild(floatingBtnEl);
+    }
   });
 
-  function clearMarkers() {
-    markers.forEach((m) => map && map.removeLayer(m));
-    markers = [];
-  }
+  function createGlobalFloatingButton() {
+    if (document.getElementById('rv-weather-global-pill')) return;
 
-  // Pure SVG string rendering - bypasses all CSS scoping issues completely
-  function createPinIcon(isActive: boolean) {
-    if (!L || typeof L.divIcon !== 'function') return null;
-
-    const pinColor = isActive ? '#00E676' : '#FF1744';
-    const svgHtml = `
-      <div style="position: relative; width: 30px; height: 30px; transform: translate(-50%, -100%);">
-        <svg viewBox="0 0 24 24" width="30" height="30" style="filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6));">
-          <path fill="${pinColor}" stroke="#FFFFFF" stroke-width="1.5" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
-          <circle cx="12" cy="9" r="3" fill="#FFFFFF"/>
-        </svg>
-      </div>
+    floatingBtnEl = document.createElement('button');
+    floatingBtnEl.id = 'rv-weather-global-pill';
+    floatingBtnEl.innerHTML = '🚐 Show RV Weather';
+    floatingBtnEl.style.cssText = `
+      position: fixed !important;
+      top: 15px !important;
+      right: 15px !important;
+      z-index: 99999999 !important;
+      background: #2196f3 !important;
+      color: #ffffff !important;
+      border: 2px solid #ffffff !important;
+      padding: 8px 16px !important;
+      border-radius: 20px !important;
+      font-size: 13px !important;
+      font-weight: bold !important;
+      cursor: pointer !important;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.6) !important;
+      display: none;
     `;
 
-    return L.divIcon({
-      html: svgHtml,
-      className: '', // Empty className avoids Svelte class stripping
-      iconSize: [30, 30],
-      iconAnchor: [15, 30]
+    floatingBtnEl.addEventListener('click', () => {
+      isMinimized = false;
+      if (floatingBtnEl) floatingBtnEl.style.display = 'none';
+      try {
+        broadcast.fire('openRhpane', 'rv-trip-weather');
+      } catch (e) {}
     });
+
+    document.body.appendChild(floatingBtnEl);
+  }
+
+  $: if (floatingBtnEl) {
+    floatingBtnEl.style.display = isMinimized ? 'block' : 'none';
+  }
+
+  function clearMarkers() {
+    markers.forEach((m) => {
+      try {
+        if (map && map.hasLayer(m)) map.removeLayer(m);
+      } catch (e) {}
+    });
+    markers = [];
   }
 
   function renderMarkers() {
@@ -88,12 +107,18 @@
 
     itinerary.forEach((stop) => {
       const isActive = selectedStop === stop;
-      const icon = createPinIcon(isActive);
-      const markerOptions = icon ? { icon } : {};
 
-      const marker = L.marker([stop.lat, stop.lon], markerOptions)
+      // Native Leaflet vector circle markers to prevent icon styling dropouts
+      const marker = L.circleMarker([stop.lat, stop.lon], {
+        radius: isActive ? 12 : 8,
+        fillColor: isActive ? '#00e676' : '#ff1744',
+        color: '#ffffff',
+        weight: 2,
+        opacity: 1,
+        fillOpacity: 0.9
+      })
         .addTo(map)
-        .bindPopup(`<b>${stop.summary}</b><br/>📅 ${stop.startDate}`);
+        .bindPopup(`<b>${stop.summary}</b><br/>📅 ${stop.startDate} @ 5:00 PM`);
 
       stop.marker = marker;
       markers.push(marker);
@@ -104,8 +129,10 @@
     });
 
     if (markers.length > 0 && !selectedStop) {
-      const group = L.featureGroup(markers);
-      map.fitBounds(group.getBounds().pad(0.2));
+      try {
+        const group = L.featureGroup(markers);
+        map.fitBounds(group.getBounds().pad(0.2));
+      } catch (e) {}
     }
   }
 
@@ -151,7 +178,8 @@
         const month = parseInt(rawDate.slice(4, 6), 10) - 1;
         const day = parseInt(rawDate.slice(6, 8), 10);
 
-        eventDate = new Date(year, month, day);
+        // Explicitly set date to 5:00 PM (17:00) local time
+        eventDate = new Date(year, month, day, 17, 0, 0);
         startDateStr = eventDate.toISOString().split('T')[0];
       }
 
@@ -222,20 +250,25 @@
   function jumpToStop(stop: Stop) {
     selectedStop = stop;
 
+    // 1. Center map on location
     if (map) {
       map.setView([stop.lat, stop.lon], 10);
     }
 
+    // 2. Refresh active marker color
     renderMarkers();
 
+    // 3. Set Windy timeline slider to 5:00 PM on arrival date
     if (stop.startDate && store) {
-      const timestamp = stop.dateObj.getTime();
+      const arrivalTime = new Date(stop.dateObj);
+      arrivalTime.setHours(17, 0, 0, 0); // Force 5 PM arrival timestamp
+      const timestamp = arrivalTime.getTime();
       if (!isNaN(timestamp)) {
         store.set('timestamp', timestamp);
       }
     }
 
-    // Target the weather picker dot on map
+    // 4. Open weather picker overlay
     try {
       if (picker && typeof picker.open === 'function') {
         picker.open({ lat: stop.lat, lon: stop.lon });
@@ -250,14 +283,7 @@
   }
 </script>
 
-{#if isMinimized}
-  <!-- Teleport action attaches button directly to body element -->
-  <div use:teleport>
-    <button class="expand-pill-root" on:click={toggleMinimize}>
-      🚐 Show RV Weather
-    </button>
-  </div>
-{:else}
+{#if !isMinimized}
   <div class="rv-plugin-container">
     <div class="header-row">
       <h3>RV Trip Weather</h3>
@@ -303,7 +329,7 @@
           >
             <div class="stop-title">{stop.summary}</div>
             <div class="stop-details">
-              📅 {stop.startDate} | 📍 {stop.lat.toFixed(3)}, {stop.lon.toFixed(3)}
+              📅 {stop.startDate} @ 5 PM | 📍 {stop.lat.toFixed(3)}, {stop.lon.toFixed(3)}
             </div>
           </button>
         {/each}
@@ -320,22 +346,6 @@
     background-color: #12161f !important;
     background: #12161f !important;
     opacity: 1 !important;
-  }
-
-  :global(.expand-pill-root) {
-    position: fixed !important;
-    top: 20px !important;
-    right: 20px !important;
-    z-index: 9999999 !important;
-    background: #2196f3 !important;
-    color: #ffffff !important;
-    border: 2px solid #ffffff !important;
-    padding: 10px 16px !important;
-    border-radius: 24px !important;
-    font-size: 13px !important;
-    font-weight: bold !important;
-    cursor: pointer !important;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6) !important;
   }
 
   .rv-plugin-container {
