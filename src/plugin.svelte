@@ -4,7 +4,6 @@
   import { map } from '@windy/map';
   import L from '@windy/leaflet';
   import picker from '@windy/picker';
-  import broadcast from '@windy/broadcast';
 
   interface Stop {
     summary: string;
@@ -25,8 +24,19 @@
   let selectedStop: Stop | null = null;
   let isMinimized = false;
 
+  // Action to attach floating button directly to the document root (bypasses Windy CSS clipping)
+  function teleport(node: HTMLElement) {
+    document.body.appendChild(node);
+    return {
+      destroy() {
+        if (node.parentNode) {
+          node.parentNode.removeChild(node);
+        }
+      }
+    };
+  }
+
   onMount(() => {
-    // Automatically load saved itinerary from previous sessions
     const savedIcs = localStorage.getItem(STORAGE_KEY);
     if (savedIcs) {
       try {
@@ -50,13 +60,25 @@
     markers = [];
   }
 
+  // Pure SVG string rendering - bypasses all CSS scoping issues completely
   function createPinIcon(isActive: boolean) {
     if (!L || typeof L.divIcon !== 'function') return null;
+
+    const pinColor = isActive ? '#00E676' : '#FF1744';
+    const svgHtml = `
+      <div style="position: relative; width: 30px; height: 30px; transform: translate(-50%, -100%);">
+        <svg viewBox="0 0 24 24" width="30" height="30" style="filter: drop-shadow(0px 3px 4px rgba(0,0,0,0.6));">
+          <path fill="${pinColor}" stroke="#FFFFFF" stroke-width="1.5" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+          <circle cx="12" cy="9" r="3" fill="#FFFFFF"/>
+        </svg>
+      </div>
+    `;
+
     return L.divIcon({
-      className: isActive ? 'rv-marker-pin active' : 'rv-marker-pin',
-      iconSize: [24, 24],
-      iconAnchor: [12, 24],
-      popupAnchor: [0, -24]
+      html: svgHtml,
+      className: '', // Empty className avoids Svelte class stripping
+      iconSize: [30, 30],
+      iconAnchor: [15, 30]
     });
   }
 
@@ -133,7 +155,6 @@
         startDateStr = eventDate.toISOString().split('T')[0];
       }
 
-      // Filter for stops within 10 days of today
       if (eventDate) {
         const diffInDays = (eventDate.getTime() - today.getTime()) / (1000 * 3600 * 24);
         if (diffInDays < 0 || diffInDays > 10) {
@@ -171,9 +192,7 @@
           throw new Error('Invalid ICS file format.');
         }
 
-        // Save raw file data to localStorage
         localStorage.setItem(STORAGE_KEY, text);
-
         itinerary = parseICS(text);
 
         if (itinerary.length === 0) {
@@ -203,15 +222,12 @@
   function jumpToStop(stop: Stop) {
     selectedStop = stop;
 
-    // 1. Center map on stop
     if (map) {
       map.setView([stop.lat, stop.lon], 10);
     }
 
-    // 2. Refresh pin icons to highlight active stop
     renderMarkers();
 
-    // 3. Sync Windy timeline date
     if (stop.startDate && store) {
       const timestamp = stop.dateObj.getTime();
       if (!isNaN(timestamp)) {
@@ -219,19 +235,13 @@
       }
     }
 
-    // 4. Force open Windy's bottom forecast weather panel
+    // Target the weather picker dot on map
     try {
-      if (store) {
-        store.set('pickerLocation', { lat: stop.lat, lon: stop.lon });
-      }
       if (picker && typeof picker.open === 'function') {
         picker.open({ lat: stop.lat, lon: stop.lon });
       }
-      if (broadcast && typeof broadcast.fire === 'function') {
-        broadcast.fire('openDetail', { lat: stop.lat, lon: stop.lon });
-      }
     } catch (e) {
-      console.warn('Could not open weather detail panel:', e);
+      console.warn('Could not trigger picker:', e);
     }
   }
 
@@ -241,15 +251,17 @@
 </script>
 
 {#if isMinimized}
-  <!-- Floating un-hide pill button anchored to viewport -->
-  <button class="expand-pill" on:click={toggleMinimize}>
-    🚐 Show RV Weather
-  </button>
+  <!-- Teleport action attaches button directly to body element -->
+  <div use:teleport>
+    <button class="expand-pill-root" on:click={toggleMinimize}>
+      🚐 Show RV Weather
+    </button>
+  </div>
 {:else}
   <div class="rv-plugin-container">
     <div class="header-row">
       <h3>RV Trip Weather</h3>
-      <button class="toggle-btn" on:click={toggleMinimize} title="Minimize panel">
+      <button class="toggle-btn" on:click={toggleMinimize} title="Hide panel">
         Hide ✖
       </button>
     </div>
@@ -303,7 +315,6 @@
 {/if}
 
 <style>
-  /* 1. OVERRIDE WINDY CONTAINER BACKGROUND */
   :global(#plugin-rhpane),
   :global(.plugin-content) {
     background-color: #12161f !important;
@@ -311,59 +322,22 @@
     opacity: 1 !important;
   }
 
-  /* 2. DYNAMIC LEAFLET MARKER STYLES */
-  :global(.rv-marker-pin) {
-    width: 24px !important;
-    height: 24px !important;
-    border-radius: 50% 50% 50% 0 !important;
-    background: #e53935 !important;
-    position: absolute !important;
-    transform: rotate(-45deg) !important;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7) !important;
-    border: 2px solid #ffffff !important;
-  }
-
-  :global(.rv-marker-pin::after) {
-    content: '' !important;
-    width: 8px !important;
-    height: 8px !important;
-    margin: 6px 0 0 6px !important;
-    background: #ffffff !important;
-    position: absolute !important;
-    border-radius: 50% !important;
-  }
-
-  :global(.rv-marker-pin.active) {
-    background: #00e676 !important;
-    transform: rotate(-45deg) scale(1.25) !important;
-    z-index: 1000 !important;
-  }
-
-  /* 3. FIXED UN-HIDE PILL BUTTON (SURVIVES SIDEBAR COLLAPSE) */
-  .expand-pill {
+  :global(.expand-pill-root) {
     position: fixed !important;
-    top: 16px !important;
-    right: 16px !important;
-    z-index: 999999 !important;
-    background: #2196f3;
-    color: #ffffff;
-    border: 2px solid #ffffff;
-    padding: 8px 14px;
-    border-radius: 20px;
-    font-size: 12px;
-    font-weight: bold;
-    cursor: pointer;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
-    transition: transform 0.2s, background-color 0.2s;
-    pointer-events: auto !important;
+    top: 20px !important;
+    right: 20px !important;
+    z-index: 9999999 !important;
+    background: #2196f3 !important;
+    color: #ffffff !important;
+    border: 2px solid #ffffff !important;
+    padding: 10px 16px !important;
+    border-radius: 24px !important;
+    font-size: 13px !important;
+    font-weight: bold !important;
+    cursor: pointer !important;
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.6) !important;
   }
 
-  .expand-pill:hover {
-    transform: scale(1.08);
-    background: #1e88e5;
-  }
-
-  /* 4. MAIN PLUGIN UI STYLES */
   .rv-plugin-container {
     padding: 12px;
     font-size: 13px;
